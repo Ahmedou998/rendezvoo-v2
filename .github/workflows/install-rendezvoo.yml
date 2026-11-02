@@ -7,39 +7,96 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: rendezvoo-install-main
+  cancel-in-progress: false
+
 jobs:
   install:
+    name: Verify, test and install
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check main branch
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "This workflow must run on main."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Configure Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Check archive
+      - name: Verify archive
         run: |
           test -f rendezvoo-main.zip
           unzip -t rendezvoo-main.zip
 
-      - name: Extract project
+      - name: Extract archive safely
         run: |
-          mkdir -p /tmp/rendezvoo
-          unzip -q rendezvoo-main.zip -d /tmp/rendezvoo
-          test -f /tmp/rendezvoo/rendezvoo-main/package.json
-          rsync -a /tmp/rendezvoo/rendezvoo-main/ ./
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
 
-      - name: Run tests
-        run: npm test
+          archive = Path("rendezvoo-main.zip")
+          target = Path("/tmp/rendezvoo-source").resolve()
+          target.mkdir(parents=True, exist_ok=True)
 
-      - name: Save extracted project
+          with zipfile.ZipFile(archive) as z:
+              for item in z.infolist():
+                  destination = (target / item.filename).resolve()
+                  if destination != target and target not in destination.parents:
+                      raise SystemExit("Unsafe path in ZIP archive")
+                  if item.filename.startswith("/"):
+                      raise SystemExit("Absolute path rejected")
+              z.extractall(target)
+
+          print("Archive extracted successfully.")
+          PY
+
+      - name: Locate project
+        id: project
         run: |
+          FILE=$(find /tmp/rendezvoo-source -name package.json \
+            -not -path '*/node_modules/*' -print -quit)
+
+          test -n "$FILE"
+          echo "root=$(dirname "$FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Run project tests
+        working-directory: ${{ steps.project.outputs.root }}
+        run: |
+          npm test
+
+      - name: Install files on main
+        run: |
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='node_modules/' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='.github/' \
+            "${{ steps.project.outputs.root }}/" ./
+
           rm -f rendezvoo-main.zip
+
+      - name: Commit and push
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Install RENDEZVOO application"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No changes to install."
+            exit 0
+          fi
+
+          git commit -m "Install RENDEZVOO after successful tests"
+          git push origin HEAD:main
