@@ -1,0 +1,45 @@
+
+name: Install RENDEZVOO
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check archive
+        run: |
+          test -f rendezvoo-main.zip
+          unzip -t rendezvoo-main.zip
+
+      - name: Extract project
+        run: |
+          mkdir -p /tmp/rendezvoo
+          unzip -q rendezvoo-main.zip -d /tmp/rendezvoo
+          test -f /tmp/rendezvoo/rendezvoo-main/package.json
+          rsync -a /tmp/rendezvoo/rendezvoo-main/ ./
+
+      - name: Run tests
+        run: npm test
+
+      - name: Save extracted project
+        run: |
+          rm -f rendezvoo-main.zip
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Install RENDEZVOO application"
+          git push
